@@ -4,6 +4,8 @@ from torchvision import models
 
 def get_teacher(num_classes=100):
     model = models.resnet152(weights=models.ResNet152_Weights.DEFAULT)
+    for param in model.parameters():
+        param.requires_grad = False
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
