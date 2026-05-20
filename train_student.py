@@ -1,23 +1,20 @@
-import argparse
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+import csv
+import time
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from models import get_teacher, get_student
 from distill import distillation_loss
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--temperature', type=float, default=4.0)
-parser.add_argument('--alpha',       type=float, default=0.9)
-parser.add_argument('--hard_only',   action='store_true')
-parser.add_argument('--teacher',     default='teacher.pth')
-args = parser.parse_args()
 
 EPOCHS = 30
 BATCH  = 64
 LR     = 1e-3
+ALPHA  = 0.0  # Weight balancing between soft and hard loss
+TEMP   = 4.0  # Temperature for softening teacher distributions
+SAVE   = '/content/drive/MyDrive/student_bl.pth'
+LOG    = '/content/drive/MyDrive/student_bl_log.csv'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
@@ -29,7 +26,7 @@ train_loader = DataLoader(
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
     ])),
-    batch_size=BATCH, shuffle=True, num_workers=4, pin_memory=True,
+    batch_size=BATCH, shuffle=True, num_workers=2, pin_memory=True,
 )
 test_loader = DataLoader(
     datasets.CIFAR100('data', train=False, download=True, transform=transforms.Compose([
@@ -37,60 +34,83 @@ test_loader = DataLoader(
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
     ])),
-    batch_size=BATCH, shuffle=False, num_workers=4, pin_memory=True,
+    batch_size=BATCH, shuffle=False, num_workers=2, pin_memory=True,
 )
 
 teacher = get_teacher().to(DEVICE)
-teacher.load_state_dict(torch.load(args.teacher, map_location=DEVICE))
+teacher.load_state_dict(torch.load('/content/drive/MyDrive/teacher.pth', map_location=DEVICE))
 teacher.eval()
-for p in teacher.parameters():
-    p.requires_grad_(False)
+for param in teacher.parameters():
+    param.requires_grad = False
 
-student          = get_student().to(DEVICE)
-compiled_teacher = torch.compile(teacher) if hasattr(torch, 'compile') else teacher
-compiled_student = torch.compile(student) if hasattr(torch, 'compile') else student
-
+student = get_student().to(DEVICE)
+if hasattr(torch, 'compile'):
+    student = torch.compile(student)
 optimizer = optim.Adam(student.parameters(), lr=LR)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-mode   = 'hard' if args.hard_only else f'distill_T{args.temperature}_a{args.alpha}'
-writer = SummaryWriter(f'runs/student_{mode}')
+with open(LOG, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerow([
+        'Epoch', 'Time_s', 
+        'Train_Loss', 'Train_Acc', 
+        'Test_Loss', 'Test_Acc_Top1', 'Test_Acc_Top5', 
+        'LR', 'Alpha', 'Temperature'
+    ])
 
 for epoch in range(1, EPOCHS + 1):
-    compiled_student.train()
-    train_loss = 0.0
+    start_time = time.time()
+    
+    student.train()
+    train_loss, train_correct = 0.0, 0
     for x, y in train_loader:
         x, y = x.to(DEVICE), y.to(DEVICE)
         optimizer.zero_grad()
-        s_logits = compiled_student(x)
-        if args.hard_only:
-            loss = F.cross_entropy(s_logits, y)
-        else:
-            with torch.no_grad():
-                t_logits = compiled_teacher(x)
-            loss = distillation_loss(s_logits, t_logits, y, args.temperature, args.alpha)
+        
+        with torch.no_grad():
+            t_logits = teacher(x)
+        s_logits = student(x)
+        
+        loss = distillation_loss(s_logits, t_logits, y, TEMP, ALPHA)
         loss.backward()
         optimizer.step()
+        
         train_loss += loss.item() * x.size(0)
+        train_correct += (s_logits.argmax(1) == y).sum().item()
+        
     scheduler.step()
     train_loss /= len(train_loader.dataset)
+    train_acc = 100 * train_correct / len(train_loader.dataset)
 
-    compiled_student.eval()
-    correct = 0
+    student.eval()
+    test_loss, correct_top1, correct_top5 = 0.0, 0, 0
     with torch.no_grad():
         for x, y in test_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
-            correct += (compiled_student(x).argmax(1) == y).sum().item()
-    test_acc = 100 * correct / len(test_loader.dataset)
+            s_logits = student(x)
+            
+            test_loss += F.cross_entropy(s_logits, y, reduction='sum').item()
+            _, top5_preds = s_logits.topk(5, 1, True, True)
+            correct_top1 += (top5_preds[:, 0] == y).sum().item()
+            correct_top5 += top5_preds.eq(y.view(-1, 1).expand_as(top5_preds)).sum().item()
 
-    writer.add_scalar('Loss/train', train_loss, epoch)
-    writer.add_scalar('Accuracy/test', test_acc, epoch)
-    writer.add_scalar('LR', scheduler.get_last_lr()[0], epoch)
-    if not args.hard_only:
-        writer.add_scalar('Distill/temperature', args.temperature, epoch)
-        writer.add_scalar('Distill/alpha', args.alpha, epoch)
-    print(f"Epoch {epoch:3d} | [{mode}] Loss: {train_loss:.4f} | Test Acc: {test_acc:.2f}%")
+    test_loss /= len(test_loader.dataset)
+    test_acc_top1 = 100 * correct_top1 / len(test_loader.dataset)
+    test_acc_top5 = 100 * correct_top5 / len(test_loader.dataset)
+    
+    epoch_time = time.time() - start_time
+    current_lr = scheduler.get_last_lr()[0]
 
-writer.close()
-torch.save(student.state_dict(), f'student_{mode}.pth')
-print(f"Saved to student_{mode}.pth")
+    with open(LOG, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([
+            epoch, round(epoch_time, 1), 
+            round(train_loss, 4), round(train_acc, 2), 
+            round(test_loss, 4), round(test_acc_top1, 2), round(test_acc_top5, 2), 
+            current_lr, ALPHA, TEMP
+        ])
+
+    print(f"Epoch {epoch:3d} | Time: {epoch_time:.1f}s | Train Acc: {train_acc:.2f}% | Test Top-1: {test_acc_top1:.2f}%")
+    torch.save(student.state_dict(), SAVE)
+
+print("Student Training Complete.")

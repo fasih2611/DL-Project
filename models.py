@@ -10,7 +10,11 @@ def get_teacher(num_classes=100):
     return model
 
 
-def get_student(num_classes=100):
-    model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+def get_student(num_classes=100, width_mult=1.0):
+    if width_mult == 1.0:
+        weights = models.MobileNet_V2_Weights.DEFAULT
+    else:
+        weights = None
+    model = models.mobilenet_v2(weights=weights, width_mult=width_mult)
     model.classifier[1] = nn.Linear(model.last_channel, num_classes)
     return model
