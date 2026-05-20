@@ -11,7 +11,7 @@ EPOCHS = 30
 BATCH  = 64
 LR     = 1e-3
 SAVE   = '/content/drive/MyDrive/teacher.pth'
-LOG    = '/content/drive/MyDrive/training_log.csv'
+LOG    = '/content/drive/MyDrive/teacher_log.csv'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
