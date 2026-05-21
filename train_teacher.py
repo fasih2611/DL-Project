@@ -40,7 +40,6 @@ compiled_model = torch.compile(model) if hasattr(torch, 'compile') else model
 optimizer = optim.Adam(model.parameters(), lr=LR)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-# Initialize the CSV file and write the header row
 with open(LOG, mode='w', newline='') as file:
     writer = csv.writer(file)
     writer.writerow([
@@ -78,10 +77,8 @@ for epoch in range(1, EPOCHS + 1):
             x, y = x.to(DEVICE), y.to(DEVICE)
             logits = compiled_model(x)
             
-            # Sum the test loss
             test_loss += F.cross_entropy(logits, y, reduction='sum').item()
             
-            # Calculate Top-1 and Top-5 correct predictions
             _, top5_preds = logits.topk(5, 1, True, True)
             correct_top1 += (top5_preds[:, 0] == y).sum().item()
             correct_top5 += top5_preds.eq(y.view(-1, 1).expand_as(top5_preds)).sum().item()
@@ -93,7 +90,6 @@ for epoch in range(1, EPOCHS + 1):
     epoch_time = time.time() - start_time
     current_lr = scheduler.get_last_lr()[0]
 
-    # Append the metrics for the current epoch to the CSV
     with open(LOG, mode='a', newline='') as file:
         writer = csv.writer(file)
         writer.writerow([

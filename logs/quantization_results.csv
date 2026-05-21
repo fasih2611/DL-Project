@@ -1,0 +1,5 @@
+Method,Precision,Top1_Acc,Top5_Acc,Delta_Top1_vs_Baseline,File_Size_MB,Avg_Latency_ms_CPU
+FP32 Baseline,float32,84.58,97.26,0.0,223.45,1037.1815
+Dynamic Quantization (Linear -> int8),int8 (Linear only),84.64,97.27,0.06,222.94,827.7579
+PTQ - Post-Training Static Quantization (FX),int8 (Conv2d + Linear),83.08,96.75,-1.5,57.24,68.9931
+"QAT - Quantization-Aware Training (10 epochs, FX)","int8 (Conv2d + Linear, fine-tuned)",84.31,97.23,-0.27,57.24,67.8651
